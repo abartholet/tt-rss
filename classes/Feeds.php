@@ -395,7 +395,7 @@ class Feeds extends Handler_Protected {
 						. ($query_error_override ? ('<strong>'.$message.'</strong>') : $message)
 						. '<p><span class="text-muted">';
 
-					$sth = $this->pdo->prepare("SELECT SUBSTRING_FOR_DATE(MAX(last_updated), 1, 19) AS last_updated
+					$sth = $this->pdo->prepare("SELECT " . Db::sql_date_substring('MAX(last_updated)', 1, 19) . " AS last_updated
 						FROM ttrss_feeds WHERE owner_uid = ?");
 					$sth->execute([$_SESSION['uid']]);
 					$row = $sth->fetch();
@@ -2431,4 +2431,3 @@ class Feeds extends Handler_Protected {
 	}
 
 }
-

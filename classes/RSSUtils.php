@@ -391,7 +391,7 @@ class RSSUtils {
 		$feed_obj = ORM::for_table('ttrss_feeds')
 			->select('ttrss_feeds.*')
 			->select_many_expr([
-				'last_unconditional' => 'SUBSTRING_FOR_DATE(last_unconditional, 1, 19)',
+				'last_unconditional' => Db::sql_date_substring('last_unconditional', 1, 19),
 				'favicon_needs_check' => "(favicon_is_custom IS NOT TRUE AND
 					(favicon_last_checked IS NULL OR " . Db::past_comparison_qpart('favicon_last_checked', '<', 12, 'hour') . "))",
 			])
