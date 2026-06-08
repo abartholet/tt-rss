@@ -190,7 +190,7 @@ const App = {
 			xhr.post("backend.php", {op: "RPC", method: "getRuntimeInfo"}, () => {
 				const css_override = is_night ? App.getInitParam("default_dark_theme") : App.getInitParam("default_light_theme");
 
-				link.setAttribute("href", css_override + "?" + Date.now());
+				link.setAttribute('href', css_override);
 
 				window.clearTimeout(this._night_mode_retry_timeout);
 			});
@@ -869,6 +869,9 @@ const App = {
 
          Headlines.initScrollHandler();
 
+         this.initPullToRefresh();
+         this.initSwipeToRead();
+
          // If the viewport grows back to the docked layout (the hamburger
          // toggle is hidden there), make sure the drawer isn't left open.
          window.addEventListener("resize", () => {
@@ -1100,6 +1103,264 @@ const App = {
 
       // Keep the Back-gesture history entries in sync with the drawer state.
       this.reconcileOverlayHistory();
+   },
+   // Pull-to-refresh for the article list on the narrow/phone layout: a downward
+   // drag while scrolled to the very top reloads the current feed once it passes
+   // a threshold -- the same ForceUpdate reload as re-selecting the feed. A small
+   // spinner badge slides down from the top edge to follow the gesture. The badge
+   // lives in #headlines-wrap-inner rather than #headlines-frame because the
+   // latter's innerHTML is rebuilt on every feed load (Headlines.onLoaded), which
+   // would delete a child of it.
+   initPullToRefresh: function() {
+      const frame = document.getElementById("headlines-frame");
+      const wrap = document.getElementById("headlines-wrap-inner");
+      if (!frame || !wrap)
+         return;
+
+      const badge = document.createElement("div");
+      badge.id = "headlines-ptr";
+      badge.innerHTML = "<i class='material-icons'>refresh</i>";
+      wrap.appendChild(badge);
+      const icon = badge.firstElementChild;
+
+      const THRESHOLD = 64;   // px of pull (pre-damping) needed to fire a refresh
+      const MAX = 96;         // clamp the badge travel so it can't be hauled off the list
+
+      let start_y = 0;
+      let start_x = 0;
+      let pulling = false;    // a qualifying downward drag from the top is active
+      let refreshing = false; // a refresh fired; awaiting the feed to finish loading
+      let safety_timeout = 0;
+
+      // Past the threshold the pull gets progressively heavier (rubber-banding).
+      const damp = (d) => d < THRESHOLD ? d : Math.min(MAX, THRESHOLD + (d - THRESHOLD) * 0.4);
+
+      const moveTo = (travel) => {
+         const progress = Math.min(1, travel / THRESHOLD);
+         badge.style.transform = `translate(-50%, ${travel}px)`;
+         badge.style.opacity = progress;
+         icon.style.transform = `rotate(${progress * 180}deg)`;
+         badge.classList.toggle("ready", travel >= THRESHOLD);
+      };
+
+      // Drop all inline overrides so the badge eases back to its parked CSS state.
+      const settle = () => {
+         badge.classList.remove("dragging", "ready");
+         badge.style.transform = "";
+         badge.style.opacity = "";
+         icon.style.transform = "";
+      };
+
+      const stopRefreshing = () => {
+         if (!refreshing)
+            return;
+         refreshing = false;
+         window.clearTimeout(safety_timeout);
+         badge.classList.remove("spinning");
+         settle();
+      };
+
+      frame.addEventListener("touchstart", (ev) => {
+         if (refreshing || pulling || ev.touches.length !== 1)
+            return;
+         if (!this.isNarrowLayout() || frame.scrollTop > 0)
+            return;
+         start_y = ev.touches[0].clientY;
+         start_x = ev.touches[0].clientX;
+         pulling = true;
+      }, {passive: true});
+
+      frame.addEventListener("touchmove", (ev) => {
+         if (!pulling)
+            return;
+         const dist = ev.touches[0].clientY - start_y;
+         const dx = ev.touches[0].clientX - start_x;
+         // Moved up, the list managed to scroll, or this is really a sideways
+         // swipe (swipe-to-read, initSwipeToRead owns those): hand it back.
+         if (dist <= 0 || frame.scrollTop > 0 || Math.abs(dx) > dist) {
+            pulling = false;
+            settle();
+            return;
+         }
+         // A genuine downward pull at the top: take over from native scroll so the
+         // browser's own overscroll/refresh doesn't also fire.
+         ev.preventDefault();
+         badge.classList.add("dragging");
+         moveTo(damp(dist));
+      }, {passive: false});
+
+      frame.addEventListener("touchend", (ev) => {
+         if (!pulling)
+            return;
+         pulling = false;
+         badge.classList.remove("dragging");
+         const touch = ev.changedTouches && ev.changedTouches[0];
+         const travel = touch ? damp(touch.clientY - start_y) : 0;
+         if (travel >= THRESHOLD) {
+            refreshing = true;
+            badge.classList.remove("ready");
+            badge.classList.add("spinning");
+            badge.style.opacity = 1;
+            badge.style.transform = `translate(-50%, ${THRESHOLD}px)`;
+            icon.style.transform = "";
+            // If the load never reports back (e.g. a network error), retract anyway.
+            safety_timeout = window.setTimeout(stopRefreshing, 15 * 1000);
+            Feeds.reloadCurrent();
+         } else {
+            settle();
+         }
+      }, {passive: true});
+
+      frame.addEventListener("touchcancel", () => {
+         if (pulling) {
+            pulling = false;
+            settle();
+         }
+      }, {passive: true});
+
+      // The reloaded feed has rendered -- stop and retract the spinner.
+      PluginHost.register(PluginHost.HOOK_FEED_LOADED, stopRefreshing);
+   },
+   // Swipe-to-dismiss on the article list (narrow/phone layout): a horizontal
+   // drag across a headline row marks it read and slides it out of the list,
+   // like the swipe-to-archive gesture in mobile mail apps. Either direction
+   // does the same thing; the row reveals a coloured "mark read" affordance on
+   // the edge it is dragged toward, which brightens once the drag passes the
+   // commit threshold. Vertical drags are left to native scrolling and to
+   // pull-to-refresh (which cedes horizontal-dominant drags to us).
+   //
+   // The row content is translated to follow the finger; the affordance is an
+   // absolutely-positioned child parked just off that edge, so it rides in with
+   // the row (no second transform to keep in sync). #headlines-frame clips its
+   // horizontal overflow (overflow-x:hidden in the narrow theme) so the parked
+   // affordance and the slid-off content stay hidden until revealed.
+   initSwipeToRead: function() {
+      const frame = document.getElementById("headlines-frame");
+      if (!frame)
+         return;
+
+      const LOCK = 10;        // px of travel before we commit to an axis
+      const THRESHOLD = 80;   // px of horizontal travel that fires the action
+
+      let row = null;         // the headline row under the finger
+      let action = null;      // the revealed "mark read" layer (a child of row)
+      let start_x = 0, start_y = 0, dx = 0;
+      let axis = "";          // "" undecided, "h" we own it, "v" native scroll
+
+      const cleanup = () => {
+         if (row) {
+            row.classList.remove("swiping");
+            row.style.transform = "";
+         }
+         if (action)
+            action.remove();
+         row = action = null;
+         axis = "";
+         dx = 0;
+      };
+
+      // Mark read (persisted by Headlines' row_observer -> catchupSelected) and
+      // animate the row off-screen, then collapse its height so the rows below
+      // slide up to fill the gap, and finally drop it from the DOM.
+      const dismiss = (dir) => {
+         const r = row, a = action;
+         const id = parseInt(r.getAttribute("data-article-id"));
+         row = action = null;   // release closure state; the node lives on alone
+         axis = "";
+         dx = 0;
+
+         Headlines.toggleUnread(id, 0);
+
+         const h = r.offsetHeight;
+         const w = r.offsetWidth;
+         r.style.height = h + "px";
+         void r.offsetHeight;   // lock the height before transitioning it to 0
+         r.classList.add("swipe-anim");
+         r.style.transform = `translateX(${dir * w}px)`;
+         r.style.height = "0px";
+         r.style.opacity = "0";
+         r.style.marginTop = r.style.marginBottom = "0px";
+         r.style.paddingTop = r.style.paddingBottom = "0px";
+         r.style.borderWidth = "0px";
+         if (a)
+            a.remove();
+         // transitionend fires per-property; a timeout also covers the case
+         // where a zero-duration transition emits nothing.
+         window.setTimeout(() => r.remove(), 300);
+      };
+
+      frame.addEventListener("touchstart", (ev) => {
+         if (!this.isNarrowLayout() || ev.touches.length !== 1) {
+            axis = "v";
+            return;
+         }
+         const r = ev.target.closest("#headlines-frame > div[id^=RROW]");
+         // skip the active (open) article — it owns a Back-gesture overlay entry
+         // — and any row already animating out.
+         if (!r || r.classList.contains("active") || r.classList.contains("swipe-anim")) {
+            axis = "v";
+            return;
+         }
+         row = r;
+         start_x = ev.touches[0].clientX;
+         start_y = ev.touches[0].clientY;
+         axis = "";
+         dx = 0;
+      }, {passive: true});
+
+      frame.addEventListener("touchmove", (ev) => {
+         if (!row || axis === "v")
+            return;
+         dx = ev.touches[0].clientX - start_x;
+         const dy = ev.touches[0].clientY - start_y;
+
+         if (axis === "") {
+            if (Math.abs(dx) < LOCK && Math.abs(dy) < LOCK)
+               return;
+            if (Math.abs(dx) <= Math.abs(dy)) {   // vertical wins: it's a scroll
+               row = null;
+               axis = "v";
+               return;
+            }
+            axis = "h";                            // horizontal wins: take over
+            row.classList.add("swiping");
+            action = document.createElement("div");
+            action.className = "hl-swipe-action";
+            action.innerHTML = "<i class='material-icons'>done_all</i>";
+            row.insertBefore(action, row.firstChild);
+         }
+
+         ev.preventDefault();
+         action.classList.toggle("from-left", dx > 0);
+         action.classList.toggle("from-right", dx < 0);
+         action.classList.toggle("ready", Math.abs(dx) >= THRESHOLD);
+         row.style.transform = `translateX(${dx}px)`;
+      }, {passive: false});
+
+      frame.addEventListener("touchend", () => {
+         if (!row || axis !== "h") {
+            cleanup();
+            return;
+         }
+         if (Math.abs(dx) >= THRESHOLD) {
+            dismiss(dx > 0 ? 1 : -1);
+            return;
+         }
+         // below threshold: ease the row back home, then drop the swiping state
+         const r = row, a = action;
+         row = action = null;
+         axis = "";
+         dx = 0;
+         r.classList.add("swipe-anim");
+         r.style.transform = "";
+         window.setTimeout(() => {
+            r.classList.remove("swiping", "swipe-anim");
+            if (a)
+               a.remove();
+         }, 220);
+      }, {passive: true});
+
+      frame.addEventListener("touchcancel", cleanup, {passive: true});
    },
    initHotkeyActions: function() {
       if (this.is_prefs) {
