@@ -747,6 +747,15 @@ body.ttrss_main {
 		display : none;
 	}
 
+	// Makes Dijit popups (the Actions menu, long-press context menus, every
+	// dropdown) modal on the narrow layout, matching the feed drawer — see the
+	// dijit.popup hooks and App._syncPopupBackdrop(). Hidden by default (and
+	// always on the docked layout, since the shown rule lives in the narrow
+	// media query) so it never traps clicks on desktop.
+	#popup-backdrop {
+		display : none;
+	}
+
 	@media (max-width: @breakpoint-md) {
 		.sidebar-toggle {
 			display : inline-block;
@@ -848,6 +857,19 @@ body.ttrss_main {
 		&.feeds-drawer-open #feeds-holder-backdrop {
 			opacity : 1;
 			visibility : visible;
+		}
+
+		// A full-screen layer just beneath the popup (dijit.popup starts at
+		// z-index 1000) that swallows the outside tap so it only dismisses the
+		// menu. Transparent on purpose — it changes behaviour, not appearance.
+		&.popup-backdrop-open #popup-backdrop {
+			display : block;
+			position : fixed;
+			top : 0;
+			left : 0;
+			right : 0;
+			bottom : 0;
+			z-index : 999;
 		}
 	}
 
@@ -953,9 +975,23 @@ body.ttrss_main {
 		}
 	}
 
-	// Narrow / phone layout: wrap each article row onto two lines — the title
-	// claims the whole first line, and the feed name, date and icons wrap onto
-	// a second line below it. Applies to both list (.hl) and combined (.cdm)
+	// Long-press opens the delegated context menus on touch screens (see
+	// App.initLongPressContextMenu()); keep the platform's own long-press
+	// behaviours — iOS Safari's link-preview sheet and text-selection
+	// callout — from also firing on the elements that carry a menu.
+	@media (pointer: coarse) {
+		.hlMenuAttach,
+		.vfeedMenuAttach,
+		#headlines-frame .feed-title,
+		#feeds-holder .dijitTreeRow {
+			user-select : none;
+			-webkit-touch-callout : none;
+		}
+	}
+
+	// Narrow / phone layout: wrap each article row — the title claims the
+	// whole first line or two, and the feed name, date and icons wrap onto a
+	// final line below it. Applies to both list (.hl) and combined (.cdm)
 	// rows, which share the same left | title | feed | date | right flex layout.
 	@media (max-width: @breakpoint-md) {
 		.hl,
@@ -967,6 +1003,31 @@ body.ttrss_main {
 		.cdm .header > .titleWrap {
 			flex-basis : 100%;
 			order : -1;
+		}
+
+		// Long titles get a second line instead of being clipped after one:
+		// closed rows clamp the title block (title plus inline preview or
+		// excerpt) at two lines with an ellipsis. Open (.active) CDM rows
+		// keep the full wrap they get from cdm.less. Bottom padding becomes
+		// a margin so the overflow clip lands exactly on the second line —
+		// the CDM excerpt is a sibling of the clamp-truncated title anchor,
+		// so its third-line glyph tops would paint through any padding.
+		.hl > .title,
+		.cdm.expandable:not(.active) .header > .titleWrap {
+			display : -webkit-box;
+			-webkit-box-orient : vertical;
+			-webkit-line-clamp : 2;
+			line-clamp : 2;
+			overflow : hidden;
+			white-space : normal;
+			padding-bottom : 0;
+			margin-bottom : 4px;
+		}
+
+		// the excerpt's own nowrap (cdm.less) would otherwise keep it from
+		// wrapping through the clamp's second line
+		.cdm.expandable:not(.active) .header > .titleWrap .excerpt {
+			white-space : normal;
 		}
 
 		// keep the trailing icons flush with the right edge of the second line
