@@ -979,8 +979,12 @@ class Feeds extends Handler_Protected {
 	 * 6 - Feed parsing failure (invalid content)
 	 * 7 - Error while creating feed database entry.
 	 * 8 - Permission denied (ACCESS_LEVEL_READONLY).
+	 * 9 - Invalid argument value provided (e.g. update_interval 9000).  URL has a dedicated code (2).
 	 */
 	static function _subscribe(string $url, int $cat_id = 0, string $auth_login = '', string $auth_pass = '', int $update_interval = 0): array {
+		// TODO: also validate $cat_id
+		if (!in_array($update_interval, array_keys(Feeds::_get_update_intervals())))
+			return ['code' => 9, 'parameters' => ['update_interval']];
 
 		$user = ORM::for_table('ttrss_users')
 			->select_many('id', 'login', 'access_level')
@@ -2175,6 +2179,11 @@ class Feeds extends Handler_Protected {
 						$query_keywords[] = "($not (LOWER(author) LIKE " . $pdo->quote("%{$keyword_value_untrimmed}%") . '))';
 						$valid_keyword_processed = true;
 						break;
+					case 'feed':
+						$query_keywords[] = "(ttrss_user_entries.feed_id $not IN (SELECT id FROM ttrss_feeds WHERE LOWER(title) LIKE " .
+							$pdo->quote("%{$keyword_value_untrimmed}%") . '))';
+						$valid_keyword_processed = true;
+						break;
 					case 'note':
 						if ($keyword_value == 'true')
 							$query_keywords[] = "($not (note IS NOT NULL AND note != ''))";
@@ -2432,4 +2441,40 @@ class Feeds extends Handler_Protected {
 		return $auth_pass;
 	}
 
+	/**
+	 * @return array<int, string>
+	 */
+	static function _get_purge_intervals(): array {
+		return [
+			0 => __('Use default'),
+			-1 => __('Never purge'),
+			7 => __('1 week old'),
+			14 => __('2 weeks old'),
+			31 => __('1 month old'),
+			60 => __('2 months old'),
+			90 => __('3 months old'),
+		];
+	}
+
+	/**
+	 * @return array<int, string>
+	 */
+	static function _get_update_intervals(bool $with_default = true): array {
+		$x = [
+			-1 => __('Disable updates'),
+			0 => __('Default interval'),
+			15 => __('15 minutes'),
+			30 => __('30 minutes'),
+			60 => __('Hourly'),
+			240 => __('4 hours'),
+			720 => __('12 hours'),
+			1440 => __('Daily'),
+			10080 => __('Weekly'),
+		];
+
+		if (!$with_default)
+			unset($x[0]);
+
+		return $x;
+	}
 }

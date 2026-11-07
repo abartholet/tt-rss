@@ -1,7 +1,7 @@
 <?php
 class API extends Handler {
 
-	const API_LEVEL  = 23;
+	const API_LEVEL  = 25;
 
 	const STATUS_OK  = 0;
 	const STATUS_ERR = 1;
@@ -399,13 +399,15 @@ class API extends Handler {
 	}
 
 	function updateFeed(): bool {
-		$feed_id = (int) clean($_REQUEST["feed_id"]);
+		$feed_id = (int) clean($_REQUEST['feed_id']);
+		$user_owned_feed = (bool) ORM::for_table('ttrss_feeds')
+			->where(['id' => $feed_id, 'owner_uid' => $_SESSION['uid']])
+			->count();
 
-		if (!ini_get("open_basedir")) {
-			RSSUtils::update_rss_feed($feed_id);
-		}
+		if ($user_owned_feed && RSSUtils::update_rss_feed($feed_id))
+			return $this->_wrap(self::STATUS_OK, ['status' => 'OK']);
 
-		return $this->_wrap(self::STATUS_OK, ["status" => "OK"]);
+		return $this->_wrap(self::STATUS_ERR, ['error' => self::E_OPERATION_FAILED]);
 	}
 
 	function catchupFeed(): bool {
@@ -659,7 +661,8 @@ class API extends Handler {
 				$feed = ORM::for_table('ttrss_feeds')
 					->select_many('id', 'cache_images')
 					->select_expr(Db::sql_date_substring('last_updated', 1, 19), 'last_updated')
-					->find_one($feed_id);
+					->where(['id' => $feed_id, 'owner_uid' => $_SESSION['uid']])
+					->find_one();
 
 				if ($feed) {
 					$last_updated = strtotime($feed->last_updated ?? '');
@@ -864,14 +867,22 @@ class API extends Handler {
 		$category_id = (int) clean($_REQUEST["category_id"]);
 		$login = clean($_REQUEST["login"] ?? "");
 		$password = clean($_REQUEST["password"] ?? "");
+		$update_interval = filter_var($_REQUEST["update_interval"] ?? 0, FILTER_VALIDATE_INT);
+
+		if (!in_array($update_interval, array_keys(Feeds::_get_update_intervals())))
+			return $this->_wrap(self::STATUS_ERR, ["error" => self::E_INCORRECT_USAGE]);
 
 		if ($feed_url) {
-			$rc = Feeds::_subscribe($feed_url, $category_id, $login, $password);
+			$rc = Feeds::_subscribe($feed_url, $category_id, $login, $password, $update_interval);
 
 			return $this->_wrap(self::STATUS_OK, ["status" => $rc]);
 		} else {
 			return $this->_wrap(self::STATUS_ERR, ["error" => self::E_INCORRECT_USAGE]);
 		}
+	}
+
+	function getFeedUpdateIntervals(): bool {
+		return $this->_wrap(self::STATUS_OK, ['update_intervals' => Feeds::_get_update_intervals()]);
 	}
 
 	function getFeedTree(): bool {

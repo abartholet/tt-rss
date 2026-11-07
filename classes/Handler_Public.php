@@ -329,7 +329,7 @@ class Handler_Public extends Handler {
 		if ($key) {
 			$access_key = ORM::for_table('ttrss_access_keys')
 				->select('owner_uid')
-				->where(['access_key' => $key, 'feed_id' => $feed])
+				->where(['access_key' => $key, 'feed_id' => $feed, 'is_cat' => $is_cat])
 				->find_one();
 
 			if ($access_key) {
@@ -626,10 +626,18 @@ class Handler_Public extends Handler {
 	function dbupdate(): void {
 		startup_gettext();
 
-		if (!Config::get(Config::SINGLE_USER_MODE) && ($_SESSION["access_level"] ?? 0) < 10) {
-			$_SESSION["login_error_msg"] = __("Your access level is insufficient to run this script.");
-			static::_render_login_form();
-			exit;
+		if (!Config::get(Config::SINGLE_USER_MODE)) {
+			if (!empty($_SESSION['uid']) && !Sessions::validate_session()) {
+				// $_SESSION['login_error_msg'] gets set in 'Sessions::validate_session()'
+				static::_render_login_form();
+				exit;
+			}
+
+			if (($_SESSION['access_level'] ?? 0) < 10) {
+				$_SESSION['login_error_msg'] = __('Your access level is insufficient to run this script.');
+				static::_render_login_form();
+				exit;
+			}
 		}
 
 		?>
