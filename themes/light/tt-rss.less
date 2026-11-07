@@ -735,7 +735,7 @@ body.ttrss_main {
 	}
 
 	// Narrow / phone layout: collapse the feed sidebar into a slide-in drawer
-	// that overlays the article view, toggled by the .sidebar-toggle hamburger
+	// that overlays the article view, toggled by the .sidebar-toggle app-logo button
 	// in the toolbar. Wider screens keep the docked, resizable sidebar above.
 	.sidebar-toggle {
 		display : none;
@@ -747,10 +747,24 @@ body.ttrss_main {
 		display : none;
 	}
 
+	// Makes Dijit popups (the Actions menu, long-press context menus, every
+	// dropdown) modal on the narrow layout, matching the feed drawer — see the
+	// dijit.popup hooks and App._syncPopupBackdrop(). Hidden by default (and
+	// always on the docked layout, since the shown rule lives in the narrow
+	// media query) so it never traps clicks on desktop.
+	#popup-backdrop {
+		display : none;
+	}
+
 	@media (max-width: @breakpoint-md) {
 		.sidebar-toggle {
 			display : inline-block;
-			font-size : 24px;
+			width : 28px;
+			height : 28px;
+			margin : 0 4px;
+			vertical-align : middle;
+			user-select : none;
+			-webkit-touch-callout : none;
 		}
 
 		// The drawer is a fixed overlay, but BorderContainer still reserves its
@@ -766,6 +780,41 @@ body.ttrss_main {
 		#content-insert {
 			left : 0 ! important;
 			width : 100% ! important;
+		}
+
+		// Our own pull-to-refresh (App.initPullToRefresh()) owns the downward
+		// overscroll at the top of the list; keep it from chaining out to the
+		// browser's native pull-to-refresh as well. overflow-x:hidden clips the
+		// swipe-to-read affordance and slid-off rows (App.initSwipeToRead()).
+		#headlines-frame {
+			overscroll-behavior-y : contain;
+			overflow-x : hidden;
+		}
+
+		// On phones, render the whole article list at the standard 16px mobile
+		// body size — matching the open article body and the browser default —
+		// instead of the desktop list's smaller 14px / 11px text. Setting the
+		// row base lifts generic inherited text (tags, the (+)/comments footer
+		// links); the explicit list below lifts the elements the desktop theme
+		// sizes smaller on purpose (titles, feed/author/date, excerpt). Weight,
+		// not size, keeps the title prominent. Desktop is untouched (this is in
+		// the narrow media query); the body.ttrss_main prefix outweighs
+		// .cdm.expandable's explicit 14px title rule.
+		.hl,
+		.cdm {
+			font-size : 16px;
+		}
+
+		.hl div.title a,
+		.hl .feed a,
+		.hl .author,
+		.hl .updated,
+		.cdm .header a.title,
+		.cdm .header .feed,
+		.cdm .header .author,
+		.cdm .header .updated,
+		.cdm .excerpt {
+			font-size : 16px;
 		}
 
 		// The splitter is meaningless while the sidebar is an overlay.
@@ -809,11 +858,140 @@ body.ttrss_main {
 			opacity : 1;
 			visibility : visible;
 		}
+
+		// A full-screen layer just beneath the popup (dijit.popup starts at
+		// z-index 1000) that swallows the outside tap so it only dismisses the
+		// menu. Transparent on purpose — it changes behaviour, not appearance.
+		&.popup-backdrop-open #popup-backdrop {
+			display : block;
+			position : fixed;
+			top : 0;
+			left : 0;
+			right : 0;
+			bottom : 0;
+			z-index : 999;
+		}
 	}
 
-	// Narrow / phone layout: wrap each article row onto two lines — the title
-	// claims the whole first line, and the feed name, date and icons wrap onto
-	// a second line below it. Applies to both list (.hl) and combined (.cdm)
+	// Pull-to-refresh spinner badge for the article list (narrow/phone layout,
+	// driven by App.initPullToRefresh()). It overlays the top of the scrolling
+	// #headlines-frame from a sibling slot in #headlines-wrap-inner, parked just
+	// above the visible top edge and invisible at rest; the gesture slides it down
+	// (.dragging removes the easing so it tracks the finger) and spins it while the
+	// feed reloads. pointer-events:none so it never intercepts taps or scrolls.
+	#headlines-ptr {
+		position : absolute;
+		top : -48px;
+		left : 50%;
+		z-index : 5;
+		display : flex;
+		align-items : center;
+		justify-content : center;
+		box-sizing : border-box;
+		width : 40px;
+		height : 40px;
+		border-radius : 50%;
+		border : 1px solid @border-default;
+		background : @default-bg;
+		box-shadow : 0 1px 6px rgba(0, 0, 0, 0.3);
+		color : @color-accent;
+		opacity : 0;
+		pointer-events : none;
+		transform : translateX(-50%);
+		transition : transform 0.25s ease, opacity 0.25s ease,
+			background-color 0.15s ease, color 0.15s ease;
+
+		.material-icons {
+			font-size : 22px;
+		}
+
+		// While the finger is down the badge follows it 1:1, with no easing.
+		&.dragging {
+			transition : none;
+		}
+
+		// Pulled past the threshold: fill with the accent colour to signal that
+		// releasing now will refresh.
+		&.ready {
+			background : @color-accent;
+			border-color : @color-accent;
+			color : white;
+		}
+
+		&.spinning .material-icons {
+			animation : ttrss-ptr-spin 0.7s linear infinite;
+		}
+	}
+
+	// Swipe-to-dismiss affordance for the article list (narrow/phone layout,
+	// driven by App.initSwipeToRead()). A horizontal drag across a row marks it
+	// read and slides it out; the row content tracks the finger while this layer
+	// — parked just off the dragged-toward edge — rides into the opening gap
+	// behind it, showing a "mark read" icon that brightens past the threshold.
+	.hl.swiping,
+	.cdm.swiping {
+		position : relative;
+	}
+
+	// Easing for the release: a snap-back, or the fly-out plus height collapse
+	// that lets the rows below slide up into the gap.
+	.hl.swipe-anim,
+	.cdm.swipe-anim {
+		transition : transform 0.2s ease, height 0.2s ease, opacity 0.2s ease,
+			margin 0.2s ease, padding 0.2s ease;
+	}
+
+	.hl-swipe-action {
+		position : absolute;
+		top : 0;
+		bottom : 0;
+		width : 100%;
+		display : flex;
+		align-items : center;
+		box-sizing : border-box;
+		padding : 0 28px;
+		background : desaturate(@color-checked, 20%);
+		color : white;
+
+		// Parked just off the edge the row is dragged toward, so it rides into
+		// the gap as the row translates — no separate transform to keep in sync.
+		// #headlines-frame's overflow-x:hidden clips the off-edge remainder.
+		&.from-left {           // dragging right reveals it from the left
+			left : -100%;
+			justify-content : flex-end;
+		}
+
+		&.from-right {          // dragging left reveals it from the right
+			left : 100%;
+			justify-content : flex-start;
+		}
+
+		&.ready {
+			background : @color-checked;
+		}
+
+		.material-icons {
+			font-size : 26px;
+		}
+	}
+
+	// Long-press opens the delegated context menus on touch screens (see
+	// App.initLongPressContextMenu()); keep the platform's own long-press
+	// behaviours — iOS Safari's link-preview sheet and text-selection
+	// callout — from also firing on the elements that carry a menu.
+	@media (pointer: coarse) {
+		.hlMenuAttach,
+		.vfeedMenuAttach,
+		#headlines-frame .feed-title,
+		#feeds-holder .dijitTreeRow {
+			user-select : none;
+			-webkit-touch-callout : none;
+		}
+	}
+
+	// Narrow / phone layout: wrap each article row — the title claims the
+	// whole first line or two, and the feed name, date and icons wrap onto a
+	// final line below it. Applies to both list (.hl) and combined (.cdm)
 	// rows, which share the same left | title | feed | date | right flex layout.
 	@media (max-width: @breakpoint-md) {
 		.hl,
@@ -825,6 +1003,31 @@ body.ttrss_main {
 		.cdm .header > .titleWrap {
 			flex-basis : 100%;
 			order : -1;
+		}
+
+		// Long titles get a second line instead of being clipped after one:
+		// closed rows clamp the title block (title plus inline preview or
+		// excerpt) at two lines with an ellipsis. Open (.active) CDM rows
+		// keep the full wrap they get from cdm.less. Bottom padding becomes
+		// a margin so the overflow clip lands exactly on the second line —
+		// the CDM excerpt is a sibling of the clamp-truncated title anchor,
+		// so its third-line glyph tops would paint through any padding.
+		.hl > .title,
+		.cdm.expandable:not(.active) .header > .titleWrap {
+			display : -webkit-box;
+			-webkit-box-orient : vertical;
+			-webkit-line-clamp : 2;
+			line-clamp : 2;
+			overflow : hidden;
+			white-space : normal;
+			padding-bottom : 0;
+			margin-bottom : 4px;
+		}
+
+		// the excerpt's own nowrap (cdm.less) would otherwise keep it from
+		// wrapping through the clamp's second line
+		.cdm.expandable:not(.active) .header > .titleWrap .excerpt {
+			white-space : normal;
 		}
 
 		// keep the trailing icons flush with the right edge of the second line
@@ -1629,6 +1832,12 @@ body.ttrss_main, body.ttrss_utility {
 
 ::-webkit-scrollbar-track {
 	background-color: #eee;
+}
+
+// Spins the pull-to-refresh badge's icon while the feed reloads (see #headlines-ptr).
+@keyframes ttrss-ptr-spin {
+	from { transform : rotate(0deg); }
+	to { transform : rotate(360deg); }
 }
 
 /* video::-webkit-media-controls-overlay-play-button {

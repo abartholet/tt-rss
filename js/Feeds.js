@@ -419,7 +419,7 @@ const	Feeds = {
 
 		if (offset !== 0) {
 			query.skip = offset;
-		} else if (!is_cat && feed === this.getActive() && !params.method) {
+		} else if (!is_cat && String(feed) === String(this.getActive()) && !params.method) {
 			query.m = "ForceUpdate";
 		}
 
@@ -463,7 +463,7 @@ const	Feeds = {
 	catchupFeed: function(feed, is_cat, mode) {
 		is_cat = is_cat || false;
 
-		let str = false;
+		let str;
 
 		switch (mode) {
 			case "1day":

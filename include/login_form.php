@@ -5,6 +5,7 @@
 	<title>Tiny Tiny RSS : Login</title>
 	<link rel="shortcut icon" type="image/png" href="images/favicon.png">
 	<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+	<meta name="viewport" content="initial-scale=1,width=device-width" />
 	<?php
 	foreach (["lib/dojo/dojo.js",
 				"lib/dojo/tt-rss-layer.js",
@@ -126,6 +127,7 @@
 			<fieldset>
 				<label><?= __("Login:") ?></label>
 				<input name="login" id="login" dojoType="dijit.form.TextBox" type="text"
+					autocomplete="username" autocapitalize="none" autocorrect="off" spellcheck="false"
 					onchange="UtilityApp.fetchProfiles()"
 					onfocus="UtilityApp.fetchProfiles()"
 					onblur="UtilityApp.fetchProfiles()"
@@ -137,6 +139,7 @@
 				<label><?= __("Password:") ?></label>
 
 				<input type="password" name="password" required="1"
+					autocomplete="current-password"
 					dojoType="dijit.form.TextBox"
 					class="input input-text"
 					onchange="UtilityApp.fetchProfiles()"

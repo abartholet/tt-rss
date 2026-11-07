@@ -30,16 +30,24 @@ class API extends Handler {
 
 	function before(string $method): bool {
 		if (parent::before($method)) {
-			header("Content-Type: application/json");
+			header('Content-Type: application/json');
 
-			if (empty($_SESSION["uid"]) && $method != "login" && $method != "isloggedin") {
-				$this->_wrap(self::STATUS_ERR, ["error" => self::E_NOT_LOGGED_IN]);
-				return false;
-			}
+			if (empty($_SESSION['uid'])) {
+				if (!in_array($method, ['login', 'isloggedin'])) {
+					$this->_wrap(self::STATUS_ERR, ['error' => self::E_NOT_LOGGED_IN]);
+					return false;
+				}
+			} else {
+				// Block requests explicitly initiated by a browser unless the user has opted-in.
+				if (isset($_SERVER['HTTP_SEC_FETCH_MODE']) && !Prefs::get(Prefs::ENABLE_API_ACCESS_BROWSER, $_SESSION['uid'])) {
+					$this->_wrap(self::STATUS_ERR, ['error' => self::E_API_DISABLED]);
+					return false;
+				}
 
-			if (!empty($_SESSION["uid"]) && $method != "logout" && !Prefs::get(Prefs::ENABLE_API_ACCESS, $_SESSION["uid"])) {
-				$this->_wrap(self::STATUS_ERR, ["error" => self::E_API_DISABLED]);
-				return false;
+				if ($method != 'logout' && !Prefs::get(Prefs::ENABLE_API_ACCESS, $_SESSION['uid'])) {
+					$this->_wrap(self::STATUS_ERR, ['error' => self::E_API_DISABLED]);
+					return false;
+				}
 			}
 
 			$this->seq = (int) clean($_REQUEST['seq'] ?? 0);
@@ -307,7 +315,7 @@ class API extends Handler {
 				->select_many('e.id', 'e.guid', 'e.title', 'e.link', 'e.author', 'e.content', 'e.lang', 'e.comments',
 					'ue.feed_id', 'ue.int_id', 'ue.marked', 'ue.unread', 'ue.published', 'ue.score', 'ue.note')
 				->select_many_expr([
-					'updated' => 'SUBSTRING_FOR_DATE(updated,1,16)',
+					'updated' => Db::sql_date_substring('updated', 1, 16),
 					'feed_title' => '(SELECT title FROM ttrss_feeds WHERE id = ue.feed_id)',
 					'site_url' => '(SELECT site_url FROM ttrss_feeds WHERE id = ue.feed_id)',
 					'hide_images' => '(SELECT hide_images FROM ttrss_feeds WHERE id = feed_id)',
@@ -601,7 +609,7 @@ class API extends Handler {
 			/* API only: -3 (Feeds::CATEGORY_ALL_EXCEPT_VIRTUAL) All feeds, excluding virtual feeds (e.g. Labels and such) */
 			$feeds_obj = ORM::for_table('ttrss_feeds')
 				->select_many('id', 'feed_url', 'cat_id', 'title', 'order_id', 'last_error', 'update_interval')
-				->select_expr('SUBSTRING_FOR_DATE(last_updated,1,19)', 'last_updated')
+				->select_expr(Db::sql_date_substring('last_updated', 1, 19), 'last_updated')
 				->where('owner_uid', $_SESSION['uid'])
 				->order_by_asc('order_id')
 				->order_by_asc('title');
@@ -650,7 +658,7 @@ class API extends Handler {
 
 				$feed = ORM::for_table('ttrss_feeds')
 					->select_many('id', 'cache_images')
-					->select_expr('SUBSTRING_FOR_DATE(last_updated,1,19)', 'last_updated')
+					->select_expr(Db::sql_date_substring('last_updated', 1, 19), 'last_updated')
 					->find_one($feed_id);
 
 				if ($feed) {

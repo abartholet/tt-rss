@@ -27,8 +27,8 @@ class Pref_Users extends Handler_Administrative {
 				->table_alias('u')
 				->select_many('u.login', 'u.access_level')
 				->select_many_expr([
-					'created' => 'SUBSTRING_FOR_DATE(u.created,1,16)',
-					'last_login' => 'SUBSTRING_FOR_DATE(u.last_login,1,16)',
+					'created' => Db::sql_date_substring('u.created', 1, 16),
+					'last_login' => Db::sql_date_substring('u.last_login', 1, 16),
 					'stored_articles' => '(SELECT COUNT(ue.int_id) FROM ttrss_user_entries ue WHERE ue.owner_uid = u.id)',
 				])
 				->find_one($id);

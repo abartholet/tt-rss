@@ -96,6 +96,14 @@ class Db {
 		}
 	}
 
+	public static function sql_date_substring(string $expr, int $pos, int $len): string {
+		if (Config::get(Config::DB_TYPE) == "mysql") {
+			return "SUBSTRING(CAST($expr AS CHAR), $pos, $len)";
+		} else {
+			return "SUBSTRING_FOR_DATE($expr,$pos,$len)";
+		}
+	}
+
 	/**
 	 * Generate a SQL WHERE clause fragment for comparing a timestamp column to a past point in time.
 	 *

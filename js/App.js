@@ -190,7 +190,7 @@ const App = {
 			xhr.post("backend.php", {op: "RPC", method: "getRuntimeInfo"}, () => {
 				const css_override = is_night ? App.getInitParam("default_dark_theme") : App.getInitParam("default_light_theme");
 
-				link.setAttribute("href", css_override + "?" + Date.now());
+				link.setAttribute('href', css_override);
 
 				window.clearTimeout(this._night_mode_retry_timeout);
 			});
@@ -375,7 +375,7 @@ const App = {
 
 		Element.hide("cmdline");
 
-		let hotkey_name = "";
+		let hotkey_name;
 
 		if (event.type === 'keydown') {
 			hotkey_name = "(" + keycode + ")";
@@ -414,7 +414,7 @@ const App = {
 			i.parentNode ? i.parentNode.removeChild(i) : true;
 		});
    },
-   // htmlspecialchars()-alike for headlines data-content attribute
+   // htmlspecialchars()-alike for HTML attribute values
    escapeHtml: function(p) {
       if (typeof p !== 'string')
          return p;
@@ -869,6 +869,10 @@ const App = {
 
          Headlines.initScrollHandler();
 
+         this.initPullToRefresh();
+         this.initSwipeToRead();
+         this.initLongPressContextMenu();
+
          // If the viewport grows back to the docked layout (the hamburger
          // toggle is hidden there), make sure the drawer isn't left open.
          window.addEventListener("resize", () => {
@@ -878,10 +882,11 @@ const App = {
          });
 
          // Device Back gesture / browser Back dismisses the topmost phone-layout
-         // overlay (the feed drawer first, then an open article) instead of
-         // leaving the app — see reconcileOverlayHistory(). A history.back() we
-         // triggered ourselves (an overlay closed by other means) also lands
-         // here, so those are skipped via _suppress_popstate.
+         // overlay — an open Dijit menu/popup first (the toolbar Actions menu or
+         // a long-press context menu), then the feed drawer, then an open article
+         // — instead of leaving the app. See reconcileOverlayHistory(). A
+         // history.back() we triggered ourselves (an overlay closed by other
+         // means) also lands here, so those are skipped via _suppress_popstate.
          window.addEventListener("popstate", () => {
             if (this._suppress_popstate > 0) {
                this._suppress_popstate--;
@@ -895,7 +900,11 @@ const App = {
             const name = this._overlay_stack.pop();
             this._suppress_reconcile = true;
             try {
-               if (name === "drawer")
+               // close() is a no-op if Dijit already dismissed the menu, which
+               // just absorbs this Back (the entry lingered until now).
+               if (name === "popup")
+                  dijit.popup.close();
+               else if (name === "drawer")
                   this.toggleSidebar(false);
                else if (this.isCombinedMode())
                   Article.cdmUnsetActive();
@@ -905,6 +914,91 @@ const App = {
                this._suppress_reconcile = false;
             }
          });
+
+         // An open Dijit popup (the toolbar Actions menu, a long-press context
+         // menu, a toolbar dropdown) sits above the drawer and article, so Back
+         // should close it first. Every popup opens through the dijit.popup
+         // singleton, so reconcile after open() to push the popup's history entry.
+         //
+         // We deliberately do NOT touch history from a close() hook: Dijit
+         // dismisses menus on its own (an outside tap, a blur, the viewport
+         // change a phone back-swipe causes), and removing the history entry at
+         // close time -- which needs a synthetic history.back() -- races the real
+         // Back. The synthetic back eats the entry first, so the user's Back then
+         // finds nothing to absorb it and leaves the app. Instead the entry
+         // lingers harmlessly: a Back pops it (the popstate handler closes the
+         // popup, or no-ops if Dijit already dismissed it, absorbing the press),
+         // and reconcileOverlayHistory prunes any leftover entry the next time
+         // another overlay changes.
+         //
+         // Popups are non-modal by default: an outside tap dismisses the menu but
+         // also activates whatever is behind it. To match the modal feed drawer
+         // on the narrow layout we park a full-screen backdrop just beneath the
+         // popup (below dijit.popup's z-index:1000, above the app) that swallows
+         // that tap so it only closes the menu. Keeping the backdrop in sync with
+         // dijit.popup._stack is a pure DOM toggle, so -- unlike the history work
+         // above -- it is safe to drive from a close() hook.
+         if (dijit.popup) {
+            const backdrop = document.createElement("div");
+            backdrop.id = "popup-backdrop";
+            // Dismiss on the press itself (touchstart), and preventDefault it, so
+            // the browser never synthesises the "compatibility" click that a tap
+            // normally produces. Without that, closing the menu hides this
+            // backdrop mid-gesture and the click then lands on whatever is now
+            // exposed beneath -- a click-through, notably on iOS Safari. Reacting
+            // to the press rather than the finger-up also stops the gesture that
+            // opened the menu (its press landed on the opener before this backdrop
+            // existed) from dismissing it the instant the finger lifts. The click
+            // handler covers non-touch input (on touch the preventDefault above
+            // suppresses it, so it does not double-fire).
+            //
+            // The gesture that OPENS a menu can still reach that click handler:
+            // a toolbar dropdown (dijit.form.Select and every other
+            // _HasDropDown opener) opens its popup on the press itself
+            // (pointerdown), which parks this backdrop under the still-down
+            // finger, and the browser hit-tests the tap's synthesised
+            // compatibility click against the *current* DOM -- the backdrop --
+            // instantly dismissing the menu it just opened. (dijit Buttons,
+            // e.g. the toolbar Actions menu, are immune: a11yclick sets
+            // dojoClick on them, so dojo/touch swallows the tap's
+            // compatibility events and re-dispatches a click at the press
+            // target instead.) Such a ghost click has no matching press on the
+            // backdrop -- its pointerdown landed on the opener before the
+            // backdrop existed -- so only honour clicks preceded by a
+            // pointerdown that actually hit the backdrop; the flag re-arms
+            // every time a popup opens.
+            let backdrop_pressed = false;
+            backdrop.addEventListener("pointerdown", () => {
+               backdrop_pressed = true;
+            });
+            backdrop.addEventListener("touchstart", (ev) => {
+               ev.preventDefault();
+               dijit.popup.close();
+            }, {passive: false});
+            backdrop.addEventListener("click", () => {
+               if (backdrop_pressed) {
+                  backdrop_pressed = false;
+                  dijit.popup.close();
+               }
+            });
+            document.body.appendChild(backdrop);
+
+            const popup = dijit.popup;
+            const orig_open = popup.open;
+            popup.open = function() {
+               const ret = orig_open.apply(this, arguments);
+               backdrop_pressed = false;
+               App._syncPopupBackdrop();
+               App.reconcileOverlayHistory();
+               return ret;
+            };
+            const orig_close = popup.close;
+            popup.close = function() {
+               const ret = orig_close.apply(this, arguments);
+               App._syncPopupBackdrop();
+               return ret;
+            };
+         }
 
          if (this.getInitParam('check_for_updates')) {
 			window.setTimeout(() => {
@@ -1051,14 +1145,26 @@ const App = {
       const toggle = document.querySelector(".sidebar-toggle");
       return !!toggle && window.getComputedStyle(toggle).display !== "none";
    },
+   // Show the modal backdrop (see the dijit.popup hooks in initSecondStage)
+   // whenever a popup is open on the narrow layout, so an outside tap dismisses
+   // the menu instead of falling through to the app. dijit.popup._stack is the
+   // set of currently-open popups; submenus keep it non-empty so the backdrop
+   // stays put until the last one closes.
+   _syncPopupBackdrop: function() {
+      const open = this.isNarrowLayout() && !!dijit.popup && dijit.popup._stack.length > 0;
+      document.body.classList.toggle("popup-backdrop-open", open);
+   },
    // Phone-layout overlays — an open article (expanded row in combined mode, or
-   // the 3-panel pane; both set the active row) and the feed drawer — each get a
-   // history entry so the device Back gesture dismisses them one at a time
-   // instead of leaving the app. This reconciles our pushed entries with what is
-   // actually open. The drawer always opens on top of an article (you can't tap
-   // a row while it covers the list), so the stack is [article, drawer] and Back
-   // closes the drawer first. Called whenever either overlay's state can change
-   // (Article.setActive/cdmUnsetActive, toggleSidebar).
+   // the 3-panel pane; both set the active row), the feed drawer, and an open
+   // Dijit menu/popup — each get a history entry so the device Back gesture
+   // dismisses them one at a time instead of leaving the app. This reconciles
+   // our pushed entries with what is actually open. They stack bottom-to-top as
+   // [article, drawer, popup]: the drawer opens over an article (you can't tap a
+   // row while it covers the list) and a popup opens over everything, so Back
+   // closes the popup first, then the drawer, then the article. Called whenever
+   // any overlay's state can change (Article.setActive/cdmUnsetActive,
+   // toggleSidebar, and the dijit.popup open hook); a lingering popup entry left
+   // after Dijit dismisses a menu on its own is pruned here on the next change.
    reconcileOverlayHistory: function() {
       if (this._suppress_reconcile)
          return;
@@ -1067,6 +1173,9 @@ const App = {
       if (this.isNarrowLayout()) {
          if (Article.getActive() !== 0) open.push("article");
          if (document.body.classList.contains("feeds-drawer-open")) open.push("drawer");
+         // dijit.popup._stack holds the open popups (menus, dropdowns); collapse
+         // them to a single topmost "popup" entry that Back closes all at once.
+         if (dijit.popup && dijit.popup._stack.length) open.push("popup");
       }
 
       // Pop our top entries that are no longer open. Each history.back() fires a
@@ -1100,6 +1209,422 @@ const App = {
 
       // Keep the Back-gesture history entries in sync with the drawer state.
       this.reconcileOverlayHistory();
+   },
+   // Pull-to-refresh for the article list on the narrow/phone layout: a downward
+   // drag while scrolled to the very top reloads the current feed once it passes
+   // a threshold -- the same ForceUpdate reload as re-selecting the feed. A small
+   // spinner badge slides down from the top edge to follow the gesture. The badge
+   // lives in #headlines-wrap-inner rather than #headlines-frame because the
+   // latter's innerHTML is rebuilt on every feed load (Headlines.onLoaded), which
+   // would delete a child of it.
+   initPullToRefresh: function() {
+      const frame = document.getElementById("headlines-frame");
+      const wrap = document.getElementById("headlines-wrap-inner");
+      if (!frame || !wrap)
+         return;
+
+      const badge = document.createElement("div");
+      badge.id = "headlines-ptr";
+      badge.innerHTML = "<i class='material-icons'>refresh</i>";
+      wrap.appendChild(badge);
+      const icon = badge.firstElementChild;
+
+      const THRESHOLD = 64;   // px of pull (pre-damping) needed to fire a refresh
+      const MAX = 96;         // clamp the badge travel so it can't be hauled off the list
+
+      let start_y = 0;
+      let start_x = 0;
+      let pulling = false;    // a qualifying downward drag from the top is active
+      let refreshing = false; // a refresh fired; awaiting the feed to finish loading
+      let safety_timeout = 0;
+
+      // Past the threshold the pull gets progressively heavier (rubber-banding).
+      const damp = (d) => d < THRESHOLD ? d : Math.min(MAX, THRESHOLD + (d - THRESHOLD) * 0.4);
+
+      const moveTo = (travel) => {
+         const progress = Math.min(1, travel / THRESHOLD);
+         badge.style.transform = `translate(-50%, ${travel}px)`;
+         badge.style.opacity = progress;
+         icon.style.transform = `rotate(${progress * 180}deg)`;
+         badge.classList.toggle("ready", travel >= THRESHOLD);
+      };
+
+      // Drop all inline overrides so the badge eases back to its parked CSS state.
+      const settle = () => {
+         badge.classList.remove("dragging", "ready");
+         badge.style.transform = "";
+         badge.style.opacity = "";
+         icon.style.transform = "";
+      };
+
+      const stopRefreshing = () => {
+         if (!refreshing)
+            return;
+         refreshing = false;
+         window.clearTimeout(safety_timeout);
+         badge.classList.remove("spinning");
+         settle();
+      };
+
+      frame.addEventListener("touchstart", (ev) => {
+         if (refreshing || pulling || ev.touches.length !== 1)
+            return;
+         if (!this.isNarrowLayout() || frame.scrollTop > 0)
+            return;
+         start_y = ev.touches[0].clientY;
+         start_x = ev.touches[0].clientX;
+         pulling = true;
+      }, {passive: true});
+
+      frame.addEventListener("touchmove", (ev) => {
+         if (!pulling)
+            return;
+         const dist = ev.touches[0].clientY - start_y;
+         const dx = ev.touches[0].clientX - start_x;
+         // Moved up, the list managed to scroll, or this is really a sideways
+         // swipe (swipe-to-read, initSwipeToRead owns those): hand it back.
+         if (dist <= 0 || frame.scrollTop > 0 || Math.abs(dx) > dist) {
+            pulling = false;
+            settle();
+            return;
+         }
+         // A genuine downward pull at the top: take over from native scroll so the
+         // browser's own overscroll/refresh doesn't also fire.
+         ev.preventDefault();
+         badge.classList.add("dragging");
+         moveTo(damp(dist));
+      }, {passive: false});
+
+      frame.addEventListener("touchend", (ev) => {
+         if (!pulling)
+            return;
+         pulling = false;
+         badge.classList.remove("dragging");
+         const touch = ev.changedTouches && ev.changedTouches[0];
+         const travel = touch ? damp(touch.clientY - start_y) : 0;
+         if (travel >= THRESHOLD) {
+            refreshing = true;
+            badge.classList.remove("ready");
+            badge.classList.add("spinning");
+            badge.style.opacity = 1;
+            badge.style.transform = `translate(-50%, ${THRESHOLD}px)`;
+            icon.style.transform = "";
+            // If the load never reports back (e.g. a network error), retract anyway.
+            safety_timeout = window.setTimeout(stopRefreshing, 15 * 1000);
+            Feeds.reloadCurrent();
+         } else {
+            settle();
+         }
+      }, {passive: true});
+
+      frame.addEventListener("touchcancel", () => {
+         if (pulling) {
+            pulling = false;
+            settle();
+         }
+      }, {passive: true});
+
+      // The reloaded feed has rendered -- stop and retract the spinner.
+      PluginHost.register(PluginHost.HOOK_FEED_LOADED, stopRefreshing);
+   },
+   // Swipe-to-dismiss on the article list (narrow/phone layout): a horizontal
+   // drag across a headline row marks it read and slides it out of the list,
+   // like the swipe-to-archive gesture in mobile mail apps. Either direction
+   // does the same thing; the row reveals a coloured "mark read" affordance on
+   // the edge it is dragged toward, which brightens once the drag passes the
+   // commit threshold. Vertical drags are left to native scrolling and to
+   // pull-to-refresh (which cedes horizontal-dominant drags to us).
+   //
+   // The row content is translated to follow the finger; the affordance is an
+   // absolutely-positioned child parked just off that edge, so it rides in with
+   // the row (no second transform to keep in sync). #headlines-frame clips its
+   // horizontal overflow (overflow-x:hidden in the narrow theme) so the parked
+   // affordance and the slid-off content stay hidden until revealed.
+   initSwipeToRead: function() {
+      const frame = document.getElementById("headlines-frame");
+      if (!frame)
+         return;
+
+      const LOCK = 10;        // px of travel before we commit to an axis
+      const THRESHOLD = 80;   // px of horizontal travel that fires the action
+
+      let row = null;         // the headline row under the finger
+      let action = null;      // the revealed "mark read" layer (a child of row)
+      let start_x = 0, start_y = 0, dx = 0;
+      let axis = "";          // "" undecided, "h" we own it, "v" native scroll
+
+      const cleanup = () => {
+         if (row) {
+            row.classList.remove("swiping");
+            row.style.transform = "";
+         }
+         if (action)
+            action.remove();
+         row = action = null;
+         axis = "";
+         dx = 0;
+      };
+
+      // Mark read (persisted by Headlines' row_observer -> catchupSelected) and
+      // animate the row off-screen, then collapse its height so the rows below
+      // slide up to fill the gap, and finally drop it from the DOM.
+      const dismiss = (dir) => {
+         const r = row, a = action;
+         const id = parseInt(r.getAttribute("data-article-id"));
+         row = action = null;   // release closure state; the node lives on alone
+         axis = "";
+         dx = 0;
+
+         Headlines.toggleUnread(id, 0);
+
+         const h = r.offsetHeight;
+         const w = r.offsetWidth;
+         r.style.height = h + "px";
+         void r.offsetHeight;   // lock the height before transitioning it to 0
+         r.classList.add("swipe-anim");
+         r.style.transform = `translateX(${dir * w}px)`;
+         r.style.height = "0px";
+         r.style.opacity = "0";
+         r.style.marginTop = r.style.marginBottom = "0px";
+         r.style.paddingTop = r.style.paddingBottom = "0px";
+         r.style.borderWidth = "0px";
+         if (a)
+            a.remove();
+         // transitionend fires per-property; a timeout also covers the case
+         // where a zero-duration transition emits nothing.
+         window.setTimeout(() => r.remove(), 300);
+      };
+
+      frame.addEventListener("touchstart", (ev) => {
+         if (!this.isNarrowLayout() || ev.touches.length !== 1) {
+            axis = "v";
+            return;
+         }
+         const r = ev.target.closest("#headlines-frame > div[id^=RROW]");
+         // skip the active (open) article — it owns a Back-gesture overlay entry
+         // — and any row already animating out.
+         if (!r || r.classList.contains("active") || r.classList.contains("swipe-anim")) {
+            axis = "v";
+            return;
+         }
+         row = r;
+         start_x = ev.touches[0].clientX;
+         start_y = ev.touches[0].clientY;
+         axis = "";
+         dx = 0;
+      }, {passive: true});
+
+      frame.addEventListener("touchmove", (ev) => {
+         if (!row || axis === "v")
+            return;
+         dx = ev.touches[0].clientX - start_x;
+         const dy = ev.touches[0].clientY - start_y;
+
+         if (axis === "") {
+            if (Math.abs(dx) < LOCK && Math.abs(dy) < LOCK)
+               return;
+            if (Math.abs(dx) <= Math.abs(dy)) {   // vertical wins: it's a scroll
+               row = null;
+               axis = "v";
+               return;
+            }
+            axis = "h";                            // horizontal wins: take over
+            row.classList.add("swiping");
+            action = document.createElement("div");
+            action.className = "hl-swipe-action";
+            action.innerHTML = "<i class='material-icons'>done_all</i>";
+            row.insertBefore(action, row.firstChild);
+         }
+
+         ev.preventDefault();
+         action.classList.toggle("from-left", dx > 0);
+         action.classList.toggle("from-right", dx < 0);
+         action.classList.toggle("ready", Math.abs(dx) >= THRESHOLD);
+         row.style.transform = `translateX(${dx}px)`;
+      }, {passive: false});
+
+      frame.addEventListener("touchend", () => {
+         if (!row || axis !== "h") {
+            cleanup();
+            return;
+         }
+         if (Math.abs(dx) >= THRESHOLD) {
+            dismiss(dx > 0 ? 1 : -1);
+            return;
+         }
+         // below threshold: ease the row back home, then drop the swiping state
+         const r = row, a = action;
+         row = action = null;
+         axis = "";
+         dx = 0;
+         r.classList.add("swipe-anim");
+         r.style.transform = "";
+         window.setTimeout(() => {
+            r.classList.remove("swiping", "swipe-anim");
+            if (a)
+               a.remove();
+         }, 220);
+      }, {passive: true});
+
+      frame.addEventListener("touchcancel", cleanup, {passive: true});
+   },
+   // iOS Safari never fires a contextmenu event for a touch long-press, and
+   // contextmenu is the only trigger the delegated dijit.Menu bindings listen
+   // for (headline rows and group headers in Headlines.initHeadlinesMenu(),
+   // feed tree rows in FeedTree._initContextMenus()) -- so on iPhones and
+   // iPads those menus were unreachable. Time the press ourselves and
+   // dispatch the contextmenu event dijit expects at the pressed element;
+   // from there the selector delegation, currentTarget and menu position work
+   // exactly as for a real right-click. Android *does* fire contextmenu
+   // natively at ~500ms, so the timer sits above that: where a native event
+   // exists it wins and cancels the pending press, and a late native
+   // duplicate arriving just after a synthesised open is eaten.
+   //
+   // The menu opens while the finger is still down. When it lifts, the
+   // browser synthesises the tap's compatibility mousedown/mouseup/click,
+   // which would land on the just-opened menu (it opens at the finger) or on
+   // the modal backdrop behind it and activate or dismiss something the user
+   // never aimed at. So once the press qualifies, the gesture's compatibility
+   // events are swallowed at the document, armed only until just after this
+   // pointer's release so the next deliberate tap (e.g. on a menu item) is
+   // unaffected.
+   initLongPressContextMenu: function() {
+      const LONG_PRESS_MS = 600;  // above Android's native long-press delay on purpose
+      const MOVE_SLOP_PX = 10;    // finger drift allowed before it counts as a scroll
+
+      ["feeds-holder", "headlines-frame"].forEach((container_id) => {
+         const container = document.getElementById(container_id);
+         if (!container)
+            return;
+
+         let pending = null;        // the press being timed
+         let synthesized_at = 0;    // when we last dispatched a synthetic contextmenu
+         let opened = null;         // origin of the press that opened a menu, for drag-to-dismiss
+
+         const cancel = () => {
+            if (pending) {
+               window.clearTimeout(pending.timer);
+               pending = null;
+            }
+         };
+
+         const armReleaseSwallow = () => {
+            const swallow = (ev) => {
+               ev.preventDefault();
+               ev.stopPropagation();
+            };
+            const types = ["mousedown", "mouseup", "click"];
+            types.forEach((t) => document.addEventListener(t, swallow, {capture: true, once: true}));
+
+            const disarm = () => {
+               container.removeEventListener("pointerup", disarm);
+               container.removeEventListener("pointercancel", disarm);
+               // compatibility events follow the release almost immediately;
+               // anything later is a new, deliberate tap
+               window.setTimeout(() => {
+                  types.forEach((t) => document.removeEventListener(t, swallow, {capture: true}));
+               }, 150);
+            };
+            container.addEventListener("pointerup", disarm);
+            container.addEventListener("pointercancel", disarm);
+         };
+
+         container.addEventListener("pointerdown", (ev) => {
+            cancel();
+            opened = null;
+
+            // a second finger means pinch or scroll, not a long-press
+            if (ev.pointerType !== "touch" || !ev.isPrimary)
+               return;
+
+            pending = {
+               pointer_id: ev.pointerId,
+               x: ev.clientX,
+               y: ev.clientY,
+               target: ev.target,
+               timer: window.setTimeout(() => {
+                  const press = pending;
+                  pending = null;
+                  // remember where the press opened the menu so a later drag dismisses it
+                  opened = {x: press.x, y: press.y, pointer_id: press.pointer_id};
+
+                  const synth = new MouseEvent("contextmenu", {bubbles: true,
+                     cancelable: true, view: window, clientX: press.x, clientY: press.y});
+                  synth.ttrss_synthesized = true;
+                  synthesized_at = Date.now();
+
+                  // Armed before dispatching, and regardless of whether a menu
+                  // is bound here: dijit opens the menu on a deferred tick
+                  // (Menu._scheduleOpen), so "did a menu open" can't be checked
+                  // synchronously -- and a recognised long-press's release
+                  // shouldn't click through to the app in any case, matching
+                  // the native behaviour on Android.
+                  armReleaseSwallow();
+                  press.target.dispatchEvent(synth);
+               }, LONG_PRESS_MS)
+            };
+         }, {passive: true});
+
+         container.addEventListener("pointermove", (ev) => {
+            if (pending && ev.pointerId === pending.pointer_id &&
+                  (Math.abs(ev.clientX - pending.x) > MOVE_SLOP_PX ||
+                   Math.abs(ev.clientY - pending.y) > MOVE_SLOP_PX)) {
+               cancel();
+               return;
+            }
+
+            // The menu opens with the finger still down; dragging it past the slop
+            // means the user means to scroll, not pick an item, so dismiss the popup
+            // rather than leave it stranded open.
+            if (opened && ev.pointerId === opened.pointer_id &&
+                  (Math.abs(ev.clientX - opened.x) > MOVE_SLOP_PX ||
+                   Math.abs(ev.clientY - opened.y) > MOVE_SLOP_PX)) {
+               if (dijit.popup)
+                  dijit.popup.close();
+               opened = null;
+            }
+         }, {passive: true});
+
+         // End of the gesture: stop timing and forget the opened-menu origin. The
+         // menu itself stays open -- the user lifts, then taps an item; only a fresh
+         // press or a drag-away (above) dismisses it.
+         const endGesture = () => { cancel(); opened = null; };
+         container.addEventListener("pointerup", endGesture, {passive: true});
+         container.addEventListener("pointercancel", endGesture, {passive: true});
+
+         // A native contextmenu -- Android's long-press or an actual right
+         // click -- outranks the timer. The reverse race (our timer fired
+         // first, the native event limped in after) would open the menu
+         // twice, so a native event on the heels of a synthesised one is
+         // eaten in the capture phase, before dijit's delegated bubble
+         // handler can see it.
+         container.addEventListener("contextmenu", (ev) => {
+            if (ev.ttrss_synthesized)
+               return;
+
+            // pending is only ever set for a touch press, so its presence here means
+            // a native long-press (Android/Firefox) is what opened the menu.
+            const touch_press = pending;
+            cancel();
+
+            if (Date.now() - synthesized_at < 400) {
+               // a late native duplicate on the heels of our synthetic open
+               ev.preventDefault();
+               ev.stopImmediatePropagation();
+               return;
+            }
+
+            // The native long-press opens the menu with the finger still down, so its
+            // release needs the same swallow the synthetic path arms -- otherwise the
+            // finger-lift's compatibility click falls through to the row and is taken
+            // as a tap (the feed tree's onClick runs Feeds.open and closes the
+            // drawer). Gate on a touch press so a real mouse right-click is untouched.
+            if (touch_press) {
+               opened = {x: touch_press.x, y: touch_press.y, pointer_id: touch_press.pointer_id};
+               armReleaseSwallow();
+            }
+         }, {capture: true});
+      });
    },
    initHotkeyActions: function() {
       if (this.is_prefs) {

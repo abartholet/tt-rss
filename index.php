@@ -1,4 +1,12 @@
 <?php
+	// Opt out of PHP's session cache limiter before include/sessions.php starts
+	// the session.  Its default ('nocache') stamps this page with 'no-store,
+	// no-cache, must-revalidate', and no-store disqualifies the document from the
+	// back/forward cache, so navigating back re-boots the entire client instead
+	// of restoring it.  Scoped to this entry point on purpose: the API handlers
+	// share the session machinery but not these requirements.
+	session_cache_limiter('');
+
 	require_once __DIR__ . '/include/autoload.php';
 	require_once __DIR__ . '/include/sessions.php';
 
@@ -9,6 +17,18 @@
 	UserHelper::login_sequence();
 
 	header('Content-Type: text/html; charset=utf-8');
+
+	// What the shell actually requires: it embeds this session's CSRF token, the
+	// user's theme and stylesheet and per-plugin CSS, so no shared cache may
+	// store it and it must be revalidated before reuse.  no-store would add only
+	// "never write it to disk", which would guard the CSRF token while leaving
+	// the session cookie that token is bound to in the cookie store regardless.
+	header('Cache-Control: private, no-cache');
+
+	// Buffered so send_conditional_html() at the end can hash it into a
+	// validator; unauthenticated requests never reach here, login_sequence()
+	// renders the login form and exits.
+	ob_start();
 ?>
 <!DOCTYPE html>
 <html>
@@ -47,6 +67,16 @@
 
 	<link rel="shortcut icon" type="image/png" href="images/favicon.png"/>
 	<link rel="icon" type="image/png" sizes="72x72" href="images/favicon-72px.png" />
+
+	<!-- Progressive Web App: installable, launches standalone on mobile. -->
+	<link rel="manifest" href="manifest.webmanifest"/>
+	<meta name="theme-color" content="#257aa7" media="(prefers-color-scheme: light)"/>
+	<meta name="theme-color" content="#303030" media="(prefers-color-scheme: dark)"/>
+	<link rel="apple-touch-icon" href="images/icon-192.png"/>
+	<meta name="apple-mobile-web-app-capable" content="yes"/>
+	<meta name="mobile-web-app-capable" content="yes"/>
+	<meta name="apple-mobile-web-app-status-bar-style" content="default"/>
+	<meta name="apple-mobile-web-app-title" content="Tiny Tiny RSS"/>
 
 	<script>
 		dojoConfig = {
@@ -153,11 +183,11 @@
         <div id="toolbar-frame" dojoType="dijit.layout.ContentPane" region="top">
             <div id="toolbar" dojoType="fox.Toolbar">
 
-					<!-- order -1: feed drawer toggle, shown only in narrow/phone layout -->
-					<i class="material-icons sidebar-toggle" role="button" tabindex="0"
+					<!-- order -1: feed drawer toggle (the app logo), shown only in narrow/phone layout -->
+					<img class="sidebar-toggle" src="images/favicon-72px.png" alt="" draggable="false" role="button" tabindex="0"
 						aria-expanded="false" title="<?= __('Toggle feed list') ?>"
 						onclick="App.toggleSidebar()"
-						onkeydown="if (event.key === 'Enter' || event.key === ' ') { App.toggleSidebar(); event.preventDefault(); }">menu</i>
+						onkeydown="if (event.key === 'Enter' || event.key === ' ') { App.toggleSidebar(); event.preventDefault(); }">
 
 			 	<!-- order 0, default -->
 
@@ -316,3 +346,4 @@
 
 </body>
 </html>
+<?php send_conditional_html((string) ob_get_clean());
